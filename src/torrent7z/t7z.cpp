@@ -1091,48 +1091,44 @@ int GetDictionarySize(finfo&fi,bool&solid)
 
 /*  #########################################################################  */
 
-int convert27z(const NWindows::NFile::NFind::CFileInfo&fileInfo,const CSysString&fname,const CSysString&local_path,void*x)
+int convert27z(const CSysString&fname,cfinfo*fi)
 {
     int eax=0;
-    cfinfo*fi=(cfinfo*)x;
-    if(!fileInfo.IsDir())
+    fi->fcount++;
+    int ist7z=is_t7z(fname);
+    bool pr=g_forceRecompress||ist7z!=1;
+    if(1)
     {
-        fi->fcount++;
-        int ist7z=is_t7z(fname);
-        bool pr=g_forceRecompress||ist7z!=1;
-        if(1)
+        const UInt32 tl=60*1000;
+        UInt32 t=GetTickCount();
+        static UInt32 ot=t+tl;
+        static bool prp=0;
+        if(pr&&prp)
         {
-            const UInt32 tl=60*1000;
-            UInt32 t=GetTickCount();
-            static UInt32 ot=t+tl;
-            static bool prp=0;
-            if(pr&&prp)
-            {
-                logprint(text("\n"),~2);
-            }
-            if((pr&&prp)||((t>ot)&&((fi->fcount+128)<fi->fcountt)))
-            {
-                ot=t+tl;
-                logprint(Int64ToString(fi->fcount,7)+text(" out of ")+Int64ToString(fi->fcountt,7)+text(" files(s) processed\n"),~2);
-            }
-            prp=pr;
+            logprint(text("\n"),~2);
         }
-        if(pr)
+        if((pr&&prp)||((t>ot)&&((fi->fcount+128)<fi->fcountt)))
         {
-            if(recompress(fname,ist7z!=0))
-            {
-                fi->fcountp++;
-            }
-            else
-            {
-                fi->fcounte++;
-            }
-            eax=1;
+            ot=t+tl;
+            logprint(Int64ToString(fi->fcount,7)+text(" out of ")+Int64ToString(fi->fcountt,7)+text(" files(s) processed\n"),~2);
+        }
+        prp=pr;
+    }
+    if(pr)
+    {
+        if(recompress(fname,ist7z!=0))
+        {
+            fi->fcountp++;
         }
         else
         {
-            fi->fcountr++;
+            fi->fcounte++;
         }
+        eax=1;
+    }
+    else
+    {
+        fi->fcountr++;
     }
     return eax;
 }
@@ -1402,7 +1398,7 @@ int t7z_main
         fi.fcountt=pi.fcount;
         for(int i=0;i<filelist.Size();i++)
         {
-            process_mask(filelist[i],convert27z,&fi);
+            convert27z(filelist[i],&fi);
         }
         if(fi.fcount==0)
         {
