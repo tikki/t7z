@@ -3,6 +3,8 @@
 #include "StdAfx.h"
 
 #ifdef _WIN32
+#include <io.h>
+#include <stdio.h>
 #include <tlhelp32.h>
 #include "t7z.h"
 
@@ -80,38 +82,41 @@ PROCESSENTRY32*GetCurrentProcessInfo()
 int IsParentGui()
 {
     int EAX=0;
-    if(buffer)
+    if(_isatty(_fileno(stdout))&&_isatty(_fileno(stderr)))
     {
-        PROCESSENTRY32&pe32=*GetCurrentProcessInfo();
-        HANDLE hProcess=OpenProcess(STANDARD_RIGHTS_REQUIRED|PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,FALSE,pe32.th32ParentProcessID);
-        if(hProcess!=INVALID_HANDLE_VALUE)
+        if(buffer)
         {
-            HMODULE ef=GetFirstModuleHandle(pe32.th32ParentProcessID);
-            SIZE_T numberOfBytesRead;
-            if(ReadProcessMemory(hProcess,(LPCVOID)ef,buffer,4*1024,&numberOfBytesRead))
+            PROCESSENTRY32&pe32=*GetCurrentProcessInfo();
+            HANDLE hProcess=OpenProcess(STANDARD_RIGHTS_REQUIRED|PROCESS_QUERY_INFORMATION|PROCESS_VM_READ,FALSE,pe32.th32ParentProcessID);
+            if(hProcess!=INVALID_HANDLE_VALUE)
             {
-                PEH pe;
-                pe.hModule=*((DWORD*)(&buffer));
-                if(pe.Signature[0]==IMAGE_DOS_SIGNATURE)
+                HMODULE ef=GetFirstModuleHandle(pe32.th32ParentProcessID);
+                SIZE_T numberOfBytesRead;
+                if(ReadProcessMemory(hProcess,(LPCVOID)ef,buffer,4*1024,&numberOfBytesRead))
                 {
-                    if((GetDosStubSize(pe)+sizeof(IMAGE_NT_HEADERS64))<4*1024)
+                    PEH pe;
+                    pe.hModule=*((DWORD*)(&buffer));
+                    if(pe.Signature[0]==IMAGE_DOS_SIGNATURE)
                     {
-                        pe.peh=GetPEHeader(pe);
-                        if(pe.pe32h->Signature==IMAGE_NT_SIGNATURE)
+                        if((GetDosStubSize(pe)+sizeof(IMAGE_NT_HEADERS64))<4*1024)
                         {
-                            if(pe.pe32h->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                            pe.peh=GetPEHeader(pe);
+                            if(pe.pe32h->Signature==IMAGE_NT_SIGNATURE)
                             {
-                                EAX=(pe.pe32h->OptionalHeader.Subsystem==IMAGE_SUBSYSTEM_WINDOWS_GUI);
-                            }
-                            if(pe.pe64h->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC)//not sure if we can even get there on 64bit windows
-                            {
-                                EAX=(pe.pe64h->OptionalHeader.Subsystem==IMAGE_SUBSYSTEM_WINDOWS_GUI);
+                                if(pe.pe32h->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+                                {
+                                    EAX=(pe.pe32h->OptionalHeader.Subsystem==IMAGE_SUBSYSTEM_WINDOWS_GUI);
+                                }
+                                if(pe.pe64h->OptionalHeader.Magic==IMAGE_NT_OPTIONAL_HDR64_MAGIC)//not sure if we can even get there on 64bit windows
+                                {
+                                    EAX=(pe.pe64h->OptionalHeader.Subsystem==IMAGE_SUBSYSTEM_WINDOWS_GUI);
+                                }
                             }
                         }
                     }
                 }
+                CloseHandle(hProcess);
             }
-            CloseHandle(hProcess);
         }
     }
     return EAX;
