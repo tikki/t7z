@@ -2,8 +2,8 @@
 #include "MyVersion.h"
 
 // #define MY_VER MY_VER_MAJOR,MY_VER_MINOR,MY_VER_BUILD,0
-#define MY_VER 0,9
-#define MY_VER_t "0.9beta"
+#define MY_VER 0,9,1
+#define MY_VER_t "0.9.1beta"
 
 #ifdef DEBUG
 #define DBG_FL VS_FF_DEBUG

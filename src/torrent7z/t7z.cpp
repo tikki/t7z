@@ -11,7 +11,6 @@
 #ifdef _WIN32
 #include <tchar.h>
 #else
-//#define _tprintf printf
 //#define _stprintf sprintf
 //#define _tsystem system
 #endif
@@ -22,6 +21,7 @@
 #include "../cpp/Common/Wildcard.h"
 #include "../cpp/Common/CommandLineParser.h"
 #include "../cpp/Common/ListFileUtils.h"
+#include "../cpp/Common/StdOutStream.h"
 #include "../cpp/Windows/FileFind.h"
 #include "../cpp/Windows/FileDir.h"
 #include "../cpp/Windows/FileIO.h"
@@ -107,10 +107,16 @@ const int crcsz=128;
 bool g_stripFileNames;
 bool g_singleFile;
 bool g_forceRecompress;
-bool g_batch;
+bool g_noninteractive;
 bool g_IsParentGui;
 bool g_firstInstance;
 bool g_defaultPriority;
+bool g_isDeleteOp;
+bool g_keepnonsolid;
+bool g_yplus;
+bool g_nplus;
+bool g_nocopyright;
+CSysString addcmds(text(""));
 
 UINT codePage;
 CSysString logFileName;
@@ -125,11 +131,18 @@ const TCHAR dirDelimiter0='/';
 const TCHAR dirDelimiter1='/';
 #endif
 
-#ifdef DEBUG
-const bool debug=true;
-#else
-const bool debug=false;
-#endif
+const bool cmpro_wa_0=false;
+const bool cmpro_wa_1=true && (!cmpro_wa_0);
+const bool cmpro_wa=cmpro_wa_0||cmpro_wa_1;
+
+bool g_createnonsolid=false;
+bool g_createnonsolid_r=false;
+
+struct
+{
+    TCHAR*ext;
+    int a;
+} knownext[]={{text(".7z"),1},{text(".zip"),0},{text(".rar"),0},{0,0}};
 
 /*  #########################################################################  */
 
@@ -144,12 +157,7 @@ static inline UINT GetCurrentCodePage()
 
 /*  #########################################################################  */
 
-#ifdef _UNICODE
-#define text(x) TEXT(x)
-#define u2a(a) (a)
-#define a2u(u) (u)
-#else
-#define text(x) (x)
+#ifndef _UNICODE
 AString u2a(const UString&u)
 {
     bool tmp;
@@ -173,6 +181,13 @@ UString a2u(const AString&a)
 bool stripFileNames()
 {
     return g_stripFileNames;
+}
+
+/*  #########################################################################  */
+
+bool isDeleteOp()
+{
+    return g_isDeleteOp;
 }
 
 /*  #########################################################################  */
@@ -283,31 +298,13 @@ int is_allowed(const UString&str)
     if(    strcmpi_x(str,L"-o")==0)return 1;
     if(str.CompareNoCase(L"-slt")==0)return 1;
     if(str.CompareNoCase(L"-y")==0)return 1;
-    if(str.CompareNoCase(L"-ssc-")==0)
-    {
-        g_CaseSensitive=0;
-        return 1;
-    }
-    if(str.CompareNoCase(L"-ssc")==0)
-    {
-        g_CaseSensitive=1;
-        return 1;
-    }
-    if(str.CompareNoCase(L"-scsutf-8")==0)
-    {
-        codePage=CP_UTF8;
-        return 1;
-    }
-    if(str.CompareNoCase(L"-scswin")==0)
-    {
-        codePage=CP_ACP;
-        return 1;
-    }
-    if(str.CompareNoCase(L"-scsdos")==0)
-    {
-        codePage=CP_OEMCP;
-        return 1;
-    }
+
+    if(str.CompareNoCase(L"-ssc-")==0)return 1;
+    if(str.CompareNoCase(L"-ssc")==0)return 1;
+    if(str.CompareNoCase(L"-scsutf-8")==0)return 1;
+    if(str.CompareNoCase(L"-scswin")==0)return 1;
+    if(str.CompareNoCase(L"-scsdos")==0)return 1;
+
     return 0;
 }
 
@@ -369,6 +366,22 @@ int file_exists(const CSysString&fname)
         }
     }
     return 0;
+}
+/*  #########################################################################  */
+
+int compare_ext(const CSysString&fname,const CSysString&ext)
+{
+    CSysString extp(text(""));
+    UInt32 i=fname.Length();
+    while(i && fname[i]!='.' && fname[i]!=dirDelimiter0 && fname[i]!=dirDelimiter1)
+    {
+        i--;
+    }
+    if(fname[i]=='.')
+    {
+        extp=fname.Mid(i,fname.Length());
+    }
+    return CompareFileNames(ext,extp)==0;
 }
 
 /*  #########################################################################  */
@@ -438,7 +451,8 @@ void log(const CSysString&str,int force=0)
     }
     if(ew)
     {
-        _tprintf(_zt(text("warning: cannot write to log file (")+logFileName+text(")\n")));
+        g_StdErr<<text("warning: cannot write to log file (")+logFileName+text(")\n");
+        g_StdErr.Flush();
     }
     if(force!=0)
     {
@@ -453,7 +467,16 @@ void logprint(const CSysString&str,UInt32 p=3)
 {
     if(p&1)
     {
-        _tprintf(str);
+        if(p&2)
+        {
+            g_StdErr<<str;
+            g_StdErr.Flush();
+        }
+        else
+        {
+            g_StdOut<<str;
+            g_StdOut.Flush();
+        }
     }
     if(p&2)
     {
@@ -642,7 +665,7 @@ int fenum(const NWindows::NFile::NFind::CFileInfo&fileInfo,const CSysString&fnam
         fi->avg_fs=fi->ttl_fs/fi->fcount;
         if(debug&&fi->debugprint)
         {
-            _tprintf(text("processing %i,%i:\t%s\n"),int(fi->fcount),int(fi->ttl_fs),_zt(local_path));
+            logprint(text("processing ")+Int64ToString(fi->fcount)+text(",")+Int64ToString(fi->ttl_fs)+text(":\t")+local_path+text("\n"),~2);
         }
     }
     return 1;
@@ -687,7 +710,14 @@ int is_t7z(const CSysString&fname)
             fread.Read(buffer+offs,(crcsz+t7zsig_size+4),ar);
             if(ar<(crcsz+t7zsig_size+4))
             {
-                ar-=t7zsig_size+4;
+                if(ar>=t7zsig_size+4)
+                {
+                    ar-=t7zsig_size+4;
+                }
+                if(ar<NArchive::N7z::kSignatureSize)
+                {
+                    ar=NArchive::N7z::kSignatureSize;
+                }
                 memset(buffer+offs+ar,0,crcsz-ar);
             }
             offs=crcsz;
@@ -698,14 +728,28 @@ int is_t7z(const CSysString&fname)
             fread.Read(buffer+offs,(crcsz+t7zsig_size+4),ar);
             if(ar<(crcsz+t7zsig_size+4))
             {
-                ar-=t7zsig_size+4;
+                if(ar>=t7zsig_size+4)
+                {
+                    ar-=t7zsig_size+4;
+                }
+                if(ar<NArchive::N7z::kSignatureSize)
+                {
+                    ar=NArchive::N7z::kSignatureSize;
+                }
                 memcpy(buffer+crcsz*2+t7zsig_size+4+8,buffer+offs+ar,t7zsig_size+4);
                 memset(buffer+offs+ar,0,crcsz-ar);
                 memcpy(buffer+crcsz*2+8,buffer+crcsz*2+t7zsig_size+4+8,t7zsig_size+4);
             }
             else
             {
-                ar-=t7zsig_size+4;
+                if(ar>=t7zsig_size+4)
+                {
+                    ar-=t7zsig_size+4;
+                }
+                if(ar<NArchive::N7z::kSignatureSize)
+                {
+                    ar=NArchive::N7z::kSignatureSize;
+                }
                 memcpy(buffer+crcsz*2+t7zsig_size+4+8,buffer+offs+ar,t7zsig_size+4);
                 memcpy(buffer+crcsz*2+8,buffer+crcsz*2+t7zsig_size+4+8,t7zsig_size+4);
             }
@@ -740,6 +784,13 @@ int is_t7z(const CSysString&fname)
 
 bool addt7zsig(const CSysString&fname)
 {
+    if(cmpro_wa_1)
+    {
+        if(g_createnonsolid)
+        {
+            return true;
+        }
+    }
     bool EAX=0;
     if(file_exists(fname)==1)
     {
@@ -808,6 +859,55 @@ bool addt7zsig(const CSysString&fname)
 
 /*  #########################################################################  */
 
+bool breakt7zsig(const CSysString&fname)
+{
+    bool EAX=0;
+    NWindows::NFile::NDirectory::MySetFileAttributes(fname,0);
+    NWindows::NFile::NIO::COutFile fwrite;
+    if(fwrite.Open(fname,OPEN_EXISTING))
+    {
+        UInt64 foffs;
+        fwrite.GetLength(foffs);
+        foffs-=1;
+        fwrite.Seek(foffs,foffs);
+        if(fwrite.SetEndOfFile())
+        {
+            EAX=1;
+        }
+        else
+        {
+            logprint(text("error: cannot write file: ")+fname+text("\n"));
+        }
+        fwrite.Close();
+    }
+    else
+    {
+        logprint(text("error: cannot write file: ")+fname+text("\n"));
+    }
+    return EAX;
+}
+
+/*  #########################################################################  */
+
+CSysString tmp_add_fname(const CSysString&fname,const int ad)
+{
+    CSysString path=clean_path(u2a(ExtractDirPrefixFromPath(a2u(fname))));
+    CSysString name=clean_path(u2a(ExtractFileNameFromPath(a2u(fname))));
+    CSysString dirname=combine_path(text(".."),text("t7z_tmpadddir"));
+    dirname=combine_path(path,dirname);
+    if(ad>0)
+    {
+        MyCreateDirectory(dirname);
+    }
+    if(ad<0)
+    {
+        MyRemoveDirectory(dirname);
+    }
+    return combine_path(dirname,text("tmp_")+name+text(".t7ztmp"));
+}
+
+/*  #########################################################################  */
+
 #ifdef _WIN32
 STARTUPINFO snfo;
 PROCESS_INFORMATION pi;
@@ -816,9 +916,21 @@ int cp(const CSysString&app,const CSysString&cmd)
     DWORD eax=-1;
     snfo.cb=sizeof(STARTUPINFO);
     memset(((char*)&snfo)+4,0,snfo.cb-4);
-    BOOL PS=CreateProcess(app,_zt(cmd),0,0,FALSE,0,0,0,&snfo,&pi);
+    BOOL PS=CreateProcess(app,_zt(cmd),0,0,FALSE,CREATE_SUSPENDED,0,0,&snfo,&pi);
     if(PS)
     {
+        if(cmpro_wa_1)
+        {
+            if(g_createnonsolid_r)
+            {
+                DWORD bp=-1,td;
+                DWORD ba=((DWORD)GetModuleHandle(0))&0xFFFFF000;
+                VirtualProtectEx(pi.hProcess,(void*)ba,16,PAGE_READWRITE,&td);
+                WriteProcessMemory(pi.hProcess,(void*)(ba+3),(void*)&bp,1,0);
+                g_createnonsolid_r=0;
+            }
+        }
+        ResumeThread(pi.hThread);
         WaitForSingleObject(pi.hProcess,INFINITE);
         GetExitCodeProcess(pi.hProcess,&eax);
         CloseHandle(pi.hThread);
@@ -918,7 +1030,41 @@ bool MyMoveFile(const CSysString&src,const CSysString&dst)
 
 /*  #########################################################################  */
 
-bool recompress(const CSysString&fname,bool is7z)
+bool MyCreateDirectory(const CSysString&src)
+{
+    int fe=file_exists(src);
+    if(fe==2)
+    {
+        return true;
+    }
+    bool EAX=NWindows::NFile::NDirectory::MyCreateDirectory(src);
+    if(!EAX)
+    {
+        logprint(text("error: cannot create directory: ")+src+text("\n"));
+    }
+    return EAX;
+}
+
+/*  #########################################################################  */
+
+bool MyRemoveDirectory(const CSysString&src)
+{
+    int fe=file_exists(src);
+    if(fe==0)
+    {
+        return true;
+    }
+    if(fe==1)
+    {
+        return false;
+    }
+    bool EAX=NWindows::NFile::NDirectory::MyRemoveDirectory(src);
+    return EAX;
+}
+
+/*  #########################################################################  */
+
+bool recompress(const CSysString&fname,bool is7z,bool nonsolid=0)
 {
     bool eax=0;
     NWindows::NFile::NDirectory::CTempDirectory tmpdir;
@@ -931,12 +1077,12 @@ bool recompress(const CSysString&fname,bool is7z)
         if(ext)
         {
             app=&e7z_exe;
-            _stprintf(buffer,text("\"%s\" x -o\"%s\" -ba -y -- \"%s\""),_zt(e7z_exe),_zt(tmpdir.GetPath()),_zt(fname));
+            _stprintf(buffer,text("\"%s\" x -o\"%s\" -ba -y %s-- \"%s\""),_zt(e7z_exe),_zt(tmpdir.GetPath()),_zt(addcmds),_zt(fname));
         }
         else
         {
             app=&t7z_exe;
-            _stprintf(buffer,text("\"%s\" x --default-priority --log\"%s\" -o\"%s\" -y -- \"%s\""),_zt(t7z_exe),_zt(logFileName),_zt(tmpdir.GetPath()),_zt(fname));
+            _stprintf(buffer,text("\"%s\" x --default-priority --log\"%s\" -o\"%s\" -y %s-- \"%s\""),_zt(t7z_exe),_zt(logFileName),_zt(tmpdir.GetPath()),_zt(addcmds),_zt(fname));
         }
         if(execute(*app,buffer))
         {
@@ -963,15 +1109,76 @@ bool recompress(const CSysString&fname,bool is7z)
             {
                 newfn=fname;
             }
+            bool cmpro_clean=0;
+            if(cmpro_wa_0)
+            {
+                if(proceed)
+                {
+                    CSysString new_fname=tmp_add_fname(fname,0);
+                    if(file_exists(new_fname))
+                    {
+                        proceed=0;
+                        _stprintf(buffer,text("\"%s\" x --default-priority --log\"%s\" -o\"%s\" -y %s-- \"%s\""),_zt(t7z_exe),_zt(logFileName),_zt(tmpdir.GetPath()),_zt(addcmds),_zt(new_fname));
+                        if(execute(t7z_exe,buffer))
+                        {
+                            finfo fi;
+                            memset(((char*)&fi)+sizeof(fi.fileInfo),0,sizeof(finfo)-sizeof(fi.fileInfo));
+                            if(process_mask(combine_path(tmpdir.GetPath(),text("*")),fenum,&fi)==0)
+                            {
+                                eax=DeleteFileAlways(fname)&&DeleteFileAlways(new_fname);
+                                tmp_add_fname(fname,-1);
+                            }
+                            else
+                            {
+                                proceed=1;
+                                cmpro_clean=1;
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if(proceed)
+                {
+                    proceed=0;
+                    finfo fi;
+                    memset(((char*)&fi)+sizeof(fi.fileInfo),0,sizeof(finfo)-sizeof(fi.fileInfo));
+                    if(process_mask(combine_path(tmpdir.GetPath(),text("*")),fenum,&fi)==0)
+                    {
+                        eax=DeleteFileAlways(fname);
+                    }
+                    else
+                    {
+                        proceed=1;
+                    }
+                }
+            }
             if(proceed)
             {
-                _stprintf(buffer,text("\"%s\" a --default-priority --log\"%s\" --replace-archive -y %s-- \"%s\" \"%s%c*\""),_zt(t7z_exe),_zt(logFileName),g_stripFileNames?text("--strip-filenames "):text(""),_zt(newfn),_zt(tmpdir.GetPath()),dirDelimiter0);
+                _stprintf(buffer,text("\"%s\" a --default-priority --log\"%s\" --replace-archive -y %s-- \"%s\" \"%s%c*\""),_zt(t7z_exe),_zt(logFileName),_zt(addcmds+(g_stripFileNames?text("--strip-filenames "):text(""))),_zt(newfn),_zt(tmpdir.GetPath()),dirDelimiter0);
+                if(cmpro_wa_1)
+                {
+                    if(nonsolid)
+                    {
+                        g_createnonsolid_r=1;
+                    }
+                }
                 if(execute(t7z_exe,buffer))
                 {
                     eax=1;
                     if(clean)
                     {
                         eax=DeleteFileAlways(fname);
+                    }
+                    if(cmpro_wa_0)
+                    {
+                        if(cmpro_clean)
+                        {
+                            CSysString new_fname=tmp_add_fname(fname,0);
+                            eax=DeleteFileAlways(new_fname);
+                            tmp_add_fname(fname,-1);
+                        }
                     }
                 }
                 else
@@ -991,6 +1198,13 @@ bool recompress(const CSysString&fname,bool is7z)
         logprint(text("error: unable to create temporary directory\n"));
     }
     return eax;
+}
+
+/*  #########################################################################  */
+
+bool convert2nonsolid(const CSysString&fname)
+{
+    return recompress(fname,1,1);
 }
 
 /*  #########################################################################  */
@@ -1038,12 +1252,12 @@ void SetCommandStrings(UStringVector&cs)
             cs.Add(pcs[0][i]);
             if(debug)
             {
-                _tprintf(text("\t%s\n"),_zt(u2a(cs[i])));
+                logprint(text("\t")+u2a(cs[i])+text("\n"),~2);
             }
         }
         if(debug)
         {
-            _tprintf(text("\n"));
+            logprint(text("\n"),~2);
         }
     }
 }
@@ -1094,25 +1308,29 @@ int GetDictionarySize(finfo&fi,bool&solid)
 int convert27z(const CSysString&fname,cfinfo*fi)
 {
     int eax=0;
-    fi->fcount++;
     int ist7z=is_t7z(fname);
     bool pr=g_forceRecompress||ist7z!=1;
     if(1)
     {
-        const UInt32 tl=60*1000;
+        const UInt32 tl=10*1000;
         UInt32 t=GetTickCount();
         static UInt32 ot=t+tl;
         static bool prp=0;
-        if(pr&&prp)
+        bool prt=((t>ot)&&((fi->fcount+128)<fi->fcountt));
+        if(prp&&(pr||prt))
         {
             logprint(text("\n"),~2);
         }
-        if((pr&&prp)||((t>ot)&&((fi->fcount+128)<fi->fcountt)))
+        if((pr&&prp)||prt)
         {
             ot=t+tl;
-            logprint(Int64ToString(fi->fcount,7)+text(" out of ")+Int64ToString(fi->fcountt,7)+text(" files(s) processed\n"),~2);
+            logprint(Int64ToString(fi->fcount,7)+text(" out of ")+Int64ToString(fi->fcountt,7)+text(" files processed\n"),~2);
         }
-        prp=pr;
+        if(prt)
+        {
+            prp=0;
+        }
+        prp|=pr;
     }
     if(pr)
     {
@@ -1130,6 +1348,7 @@ int convert27z(const CSysString&fname,cfinfo*fi)
     {
         fi->fcountr++;
     }
+    fi->fcount++;
     return eax;
 }
 
@@ -1137,9 +1356,38 @@ int convert27z(const CSysString&fname,cfinfo*fi)
 
 void print_usage()
 {
-    logprint(text("error: no parameters, or invalid parameters specified\n"),~2);
-    logprint(text("       this is a command line application,\n"),~2);
-    logprint(text("       see readme.txt to learn how to use it\n"),~2);
+    logprint(usage_info,~2);
+}
+
+/*  #########################################################################  */
+
+void print_copyright()
+{
+#ifdef _UNICODE
+    CSysString blk(text(""));
+    if(blk.Compare(CSysString(_tgetenv(_zt(MultiByteToUnicodeString(t7zsig_str,CP_ACP)))))==0)
+    {
+        setenv(_zt(MultiByteToUnicodeString(t7zsig_str,CP_ACP)),text("1"),1);
+        if(!g_nocopyright)
+        {
+            logprint(text("\n")+MultiByteToUnicodeString(t7zsig_str,CP_ACP)+text("/")+text(__TIMESTAMP__)+text("\n"),~2);
+            logprint(text("using ")+MultiByteToUnicodeString(k7zCopyrightString,CP_ACP)+text("\n\n"),~2);
+        }
+        g_firstInstance=1;
+    }
+#else
+    CSysString blk(text(""));
+    if(blk.Compare(CSysString(_tgetenv(t7zsig_str)))==0)
+    {
+        setenv(t7zsig_str,text("1"),1);
+        if(!g_nocopyright)
+        {
+            logprint(text("\n")+CSysString(t7zsig_str)+text("/")+text(__TIMESTAMP__)+text("\n"),~2);
+            logprint(text("using ")+CSysString(k7zCopyrightString)+text("\n\n"),~2);
+        }
+        g_firstInstance=1;
+    }
+#endif
 }
 
 /*  #########################################################################  */
@@ -1153,12 +1401,23 @@ int t7z_main
 {
     UStringVector commandStrings;
 #ifdef _WIN32
-    NCommandLineParser::SplitCommandLine(GetCommandLineW(),commandStrings);
+    UString cmdl(GetCommandLineW());
+    NCommandLineParser::SplitCommandLine(cmdl,commandStrings);
 #else
 //    GetArguments(numArguments,arguments,commandStrings);
     extern void mySplitCommandLine(int numArguments,const char *arguments[],UStringVector &parts);
     mySplitCommandLine(numArguments,arguments,commandStrings);
 #endif
+    for(int i=1;i<commandStrings.Size();i++)
+    {
+        if(commandStrings[i].CompareNoCase(L"-ba")==0)
+        {
+            g_nocopyright=1;
+            commandStrings.Delete(i);
+            i--;
+        }
+    }
+    print_copyright();
     int operation_mode=1;
     int no_more_switches=0;
     int replace_archive=0;
@@ -1168,15 +1427,25 @@ int t7z_main
         {
             if(is_allowed(commandStrings[i]))
             {
-                operation_mode=3;
+                operation_mode=777;
             }
             else
             {
+                bool knowncmd=0;
                 if(commandStrings[i].CompareNoCase(L"a")==0)
                 {
                     operation_mode=2;
+                    knowncmd=1;
                 }
-                else
+                if(cmpro_wa)
+                {
+                    if(commandStrings[i].CompareNoCase(L"d")==0)
+                    {
+                        operation_mode=3;
+                        knowncmd=1;
+                    }
+                }
+                if(!knowncmd)
                 {
                     operation_mode=0;
                     logprint(text("error: invalid argument: ")+u2a(commandStrings[i])+text("\n"));
@@ -1194,34 +1463,84 @@ int t7z_main
                     no_more_switches=1;
                 }
                 int noprint=0;
-                if(commandStrings[i].CompareNoCase(L"--replace-archive")==0)
+                if(commandStrings[i].CompareNoCase(L"--replace-archive")==0||commandStrings[i].CompareNoCase(L"-ra")==0)
                 {
                     replace_archive=1;
                     noprint=1;
                 }
-                if(strcmpi_x(commandStrings[i],L"--log")==0)
+                if(strcmpi_x(commandStrings[i],L"--log")==0||strcmpi_x(commandStrings[i],L"-l")==0)
                 {
                     logFileName=GetPathFromSwitch(u2a(commandStrings[i]));
                     noprint=1;
                 }
-                if(commandStrings[i].CompareNoCase(L"--force-recompress")==0)
+                if(commandStrings[i].CompareNoCase(L"--force-recompress")==0||commandStrings[i].CompareNoCase(L"-fr")==0)
                 {
                     g_forceRecompress=1;
                     noprint=1;
                 }
-                if(commandStrings[i].CompareNoCase(L"--batch")==0)
+                if(commandStrings[i].CompareNoCase(L"--batch")==0||commandStrings[i].CompareNoCase(L"-b")==0)
                 {
-                    g_batch=1;
+                    g_noninteractive=1;
                     noprint=1;
                 }
-                if(commandStrings[i].CompareNoCase(L"--default-priority")==0)
+                if(commandStrings[i].CompareNoCase(L"--default-priority")==0||commandStrings[i].CompareNoCase(L"-dp")==0)
                 {
                     g_defaultPriority=1;
                     noprint=1;
                 }
-                if(commandStrings[i].CompareNoCase(L"--strip-filenames")==0)
+                if(commandStrings[i].CompareNoCase(L"--strip-filenames")==0||commandStrings[i].CompareNoCase(L"-sf")==0)
                 {
                     g_stripFileNames=1;
+                    noprint=1;
+                }
+                if(cmpro_wa)
+                {
+                    if(commandStrings[i].CompareNoCase(L"--cmpro")==0||commandStrings[i].CompareNoCase(L"-cm")==0)
+                    {
+                        g_keepnonsolid=1;
+                        g_noninteractive=1;
+                        noprint=1;
+                    }
+                }
+                if(commandStrings[i].CompareNoCase(L"-ssc-")==0)
+                {
+                    g_CaseSensitive=0;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-ssc")==0)
+                {
+                    g_CaseSensitive=1;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-scsutf-8")==0)
+                {
+                    codePage=CP_UTF8;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-scswin")==0)
+                {
+                    codePage=CP_ACP;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-scsdos")==0)
+                {
+                    codePage=CP_OEMCP;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-y")==0)
+                {
+                    g_yplus=1;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-n")==0)
+                {
+                    g_nplus=1;
+                    noprint=1;
+                }
+                if(commandStrings[i].CompareNoCase(L"-bd")==0)
+                {
+                    addcmds+=text("-bd");
+                    addcmds+=text(" ");
                     noprint=1;
                 }
                 if(!is_allowed(commandStrings[i]))
@@ -1242,6 +1561,17 @@ int t7z_main
         SetPriorityClass(GetCurrentProcess(),IDLE_PRIORITY_CLASS);
     }
 #endif
+    if(g_yplus!=0&&g_nplus!=0)
+    {
+        g_yplus=0;
+    }
+    if(g_noninteractive)
+    {
+        if(g_yplus==0&&g_nplus==0)
+        {
+            g_nplus=1;
+        }
+    }
     NWindows::NFile::NDirectory::CTempDirectory tmpdir;
     UStringVector t7z_commandStrings;
     SetCommandStrings(t7z_commandStrings);
@@ -1279,7 +1609,7 @@ int t7z_main
 #else
         if(nolog)
         {
-            if(!((!g_batch)&&g_IsParentGui))
+            if(!((!g_noninteractive)&&g_IsParentGui))
             {
                 logFileName=combine_path(cpath,CSysString(buffer));
             }
@@ -1299,7 +1629,7 @@ int t7z_main
         }
         if(nolog)
         {
-            if((!g_batch)&&g_IsParentGui)
+            if((!g_noninteractive)&&g_IsParentGui)
             {
                 cpath=clean_path(u2a(ExtractDirPrefixFromPath(a2u(cpath))));
                 logFileName=combine_path(cpath,CSysString(buffer));
@@ -1348,10 +1678,6 @@ int t7z_main
     if(operation_mode==0)
     {
         print_usage();
-        if(g_firstInstance)
-        {
-            tmpdir.Remove();
-        }
         return NExitCode::kUserError;
     }
     if(operation_mode==1)
@@ -1382,16 +1708,94 @@ int t7z_main
         pi.filelist=&filelist;
         for(int i=1;i<commandStrings.Size();i++)
         {
+            int cln=0;
             CSysString fn;
             if(file_exists(u2a(commandStrings[i]))==2)
             {
-                fn=combine_path(u2a(commandStrings[i]),text("*.7z"));
+                fn=combine_path(u2a(commandStrings[i]),text("*"));
+                cln=1;
             }
             else
             {
                 fn=u2a(commandStrings[i]);
             }
+            int fls=filelist.Size();
             process_mask(fn,fenum,&pi);
+            if(cln)
+            {
+                for(int j=fls;j<filelist.Size();j++)
+                {
+                    int pass=0;
+                    for(int k=0;knownext[k].ext;k++)
+                    {
+                        if(compare_ext(filelist[j],knownext[k].ext))
+                        {
+                            if(knownext[k].a==0)
+                            {
+                                if(g_yplus)
+                                {
+                                    knownext[k].a=1;
+                                }
+                                if(g_nplus)
+                                {
+                                    knownext[k].a=2;
+                                }
+                            }
+                            pass=knownext[k].a==1;
+                            if(knownext[k].a==0)
+                            {
+                                int rep=0;
+                                while(rep==0)
+                                {
+                                    logprint(text("Convert \"")+filelist[j]+text("\" to t7z?\n Yes (y)/No (n)/Yes to All *")+knownext[k].ext+text(" (y+,a)/No to All *")+knownext[k].ext+text(" (n+,-)/Quit (q)?  "),~2);
+                                    TCHAR reply_buff[64];
+                                    reply_buff[0]=16;
+                                    TCHAR*reply=_getts(reply_buff);
+                                    logprint(text("\n"),~2);
+                                    if(reply==0)
+                                    {
+                                    }
+                                    else
+                                    {
+                                        if(lstrcmpi(reply,text("y"))==0||lstrcmpi(reply,text("yes"))==0)
+                                        {
+                                            pass=1;
+                                            rep=1;
+                                        }
+                                        if(lstrcmpi(reply,text("n"))==0||lstrcmpi(reply,text("no"))==0)
+                                        {
+                                            rep=1;
+                                        }
+                                        if(lstrcmpi(reply,text("y+"))==0||lstrcmpi(reply,text("a"))==0||lstrcmpi(reply,text("yes to all"))==0)
+                                        {
+                                            pass=1;
+                                            knownext[k].a=1;
+                                            rep=1;
+                                        }
+                                        if(reply[0]==0||lstrcmpi(reply,text("n+"))==0||lstrcmpi(reply,text("-"))==0||lstrcmpi(reply,text("no to all"))==0)
+                                        {
+                                            knownext[k].a=2;
+                                            rep=1;
+                                        }
+                                        if(lstrcmpi(reply,text("q"))==0||lstrcmpi(reply,text("quit"))==0)
+                                        {
+                                            g_noninteractive=1;
+                                            return 0;
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    if(!pass)
+                    {
+                        filelist.Delete(j);
+                        pi.fcount--;
+                        j--;
+                    }
+                }
+            }
         }
         cfinfo fi;
         memset(&fi,0,sizeof(fi));
@@ -1407,7 +1811,7 @@ int t7z_main
         else
         {
             int print=fi.fcounte?~0:~2;
-            logprint(text("\n")+Int64ToString(fi.fcount)+text(" file(s) processed, ")+Int64ToString(fi.fcountp)+text(" files(s) converted\n"),print);
+            logprint(text("\n")+Int64ToString(fi.fcount)+text(" file(s) processed, ")+Int64ToString(fi.fcountp)+text(" file(s) converted\n"),print);
             if(fi.fcountr)
             {
                 logprint(Int64ToString(fi.fcountr)+text(" file(s) were already in t7z format\n"),print);
@@ -1538,10 +1942,6 @@ int t7z_main
             {
                 logprint(text("error: no files to process\n"));
             }
-            if(g_firstInstance)
-            {
-                tmpdir.Remove();
-            }
             return NExitCode::kUserError;
         }
         bool solid;
@@ -1551,7 +1951,7 @@ int t7z_main
             sd[0]=UString(L"-ms=")+a2u(Int64ToString(fix(fi.fcount+128,1024)))+UString(L"f4g");
             if(debug)
             {
-                _tprintf(text("\t***\tsolid mode activated\n"));
+                logprint(text("\t***\tsolid mode activated\n"),~2);
             }
         }
         else
@@ -1560,7 +1960,7 @@ int t7z_main
             sd[0]=UString(L"-ms=")+a2u(Int64ToString(fix(fi.fcount+128,1024)))+UString(L"f4g");
             if(debug)
             {
-                _tprintf(text("\t***\tno use for solid mode\n"));
+                logprint(text("\t***\tno use for solid mode\n"),~2);
             }
         }
         pd[0]=UString(L"-m0=LZMA:a1:d")+a2u(Int64ToString(ds))+UString(L"m:mf=BT4:fb128:mc80:lc4:lp0:pb2");
@@ -1577,12 +1977,64 @@ int t7z_main
             fe=file_exists(u2a(archive[0]));
             if(fe!=0)
             {
-                logprint(text("error: file \"")+u2a(archive[0])+text("\" already exists, update operation is not supported, aborting\n"));
-                if(g_firstInstance)
+                bool adderr=1;
+                if(cmpro_wa)
                 {
-                    tmpdir.Remove();
+                    CSysString fname=u2a(archive[0]);
+                    int ist7z=is_t7z(fname);
+                    if(ist7z==1)
+                    {
+                        if(cmpro_wa_0)
+                        {
+                            if(breakt7zsig(fname))
+                            {
+                                ist7z=2;
+                            }
+                        }
+                        if(cmpro_wa_1)
+                        {
+                            if(convert2nonsolid(fname))
+                            {
+                                ist7z=2;
+                            }
+                        }
+                        if(ist7z!=2)
+                        {
+                            logprint(text("error: cannot update archive \"")+u2a(archive[0])+text("\"\n"));
+                            return NExitCode::kUserError;
+                        }
+                    }
+                    if(ist7z==2)
+                    {
+                        adderr=0;
+                        if(cmpro_wa_0)
+                        {
+                            archive[0]=a2u(tmp_add_fname(fname,1));
+                        }
+                        t7z_commandStrings.Delete(6,7);
+                        t7z_commandStrings.Delete(4,1);
+                        sd[0]=L"-mx=1";
+                        pd[0]=L"-ms=off";
+                        int eax=main3(
+#ifndef _WIN32
+                        argc,newargs
+#endif
+                        );
+                        if(!g_keepnonsolid)
+                        {
+                            if(!recompress(u2a(archive[0]),1))
+                            {
+                                eax=NExitCode::kFatalError;
+                            }
+                        }
+                        return eax;
+                    }
                 }
-                return NExitCode::kUserError;
+                if(adderr)
+                {
+                    logprint(text("error: file \"")+u2a(archive[0])+text("\" already exists, update operation is not supported, aborting\n"));
+                    return NExitCode::kUserError;
+                }
             }
         }
         UString rarchive=archive[0];
@@ -1591,10 +2043,6 @@ int t7z_main
         if(fe!=0)
         {
             logprint(text("error: file \"")+u2a(archive[0])+text("\" already exists(manually delete .tmp file, probably a leftover)\n"));
-            if(g_firstInstance)
-            {
-                tmpdir.Remove();
-            }
             return NExitCode::kUserError;
         }
         if(fi.tcount==1)
@@ -1604,6 +2052,16 @@ int t7z_main
         if(!g_singleFile)
         {
             g_stripFileNames=0;
+        }
+        if(cmpro_wa_1)
+        {
+            if(g_createnonsolid)
+            {
+                t7z_commandStrings.Delete(6,7);
+                t7z_commandStrings.Delete(4,1);
+                sd[0]=L"-mx=1";
+                pd[0]=L"-ms=off";
+            }
         }
         int eax=main3(
 #ifndef _WIN32
@@ -1641,16 +2099,138 @@ int t7z_main
                 DeleteFileAlways(u2a(archive[0]));
             }
         }
-        if(g_firstInstance)
-        {
-            tmpdir.Remove();
-        }
         return eax;
     }
     if(operation_mode==3)
     {
-        t7z_commandStrings.Insert(1,L"-ba");
-        t7z_commandStrings.Insert(1,L"-r");
+        if(cmpro_wa)
+        {
+            if(cmpro_wa_0)
+            {
+                t7z_commandStrings.Add(L"u");
+                t7z_commandStrings.Add(L"-up1q3r3x3y3z3w3");
+            }
+            if(cmpro_wa_1)
+            {
+                t7z_commandStrings.Add(L"d");
+            }
+            t7z_commandStrings.Add(L"-ba");
+            t7z_commandStrings.Add(L"-mx=1");
+            t7z_commandStrings.Add(L"-ms=off");
+            no_more_switches=0;
+            for(int i=1;i<commandStrings.Size();i++)
+            {
+                if(is_command(commandStrings[i]))
+                {
+                    commandStrings.Delete(i);
+                    i--;
+                }
+                else
+                {
+                    if(no_more_switches==0&&is_switch(commandStrings[i]))
+                    {
+                        if(commandStrings[i].CompareNoCase(L"--")==0)
+                        {
+                            no_more_switches=1;
+                        }
+                        commandStrings.Delete(i);
+                        i--;
+                    }
+                }
+            }
+            t7z_commandStrings.Add(L"--");
+            t7z_commandStrings.Add(L"");
+            UString*archive=&t7z_commandStrings[t7z_commandStrings.Size()-1];
+            int fe=0;
+            for(int i=1;i<commandStrings.Size();i++)
+            {
+                if(fe==0)
+                {
+                    archive[0]=commandStrings[i];
+                    fe=1;
+                    continue;
+                }
+                if(cmpro_wa_0)
+                {
+                    if(DoesNameContainWildCard(commandStrings[i]))
+                    {
+                        logprint(text("error: wilcards for delete operation are not implemented yet\n"));
+                        return NExitCode::kUserError;
+                    }
+                }
+                t7z_commandStrings.Add(commandStrings[i]);
+            }
+            if(archive[0][0]==0)
+            {
+                archive[0]=L"default";
+            }
+            if(nodots(archive[0]))
+            {
+                archive[0]+=L".7z";
+            }
+            fe=file_exists(u2a(archive[0]));
+            if(fe)
+            {
+                CSysString fname=u2a(archive[0]);
+                int ist7z=is_t7z(fname);
+                if(ist7z==1)
+                {
+                    if(cmpro_wa_0)
+                    {
+                        if(breakt7zsig(fname))
+                        {
+                            ist7z=2;
+                        }
+                    }
+                    if(cmpro_wa_1)
+                    {
+                        if(convert2nonsolid(fname))
+                        {
+                            ist7z=2;
+                        }
+                    }
+                }
+                if(ist7z==2)
+                {
+                    if(cmpro_wa_0)
+                    {
+                        archive[0]=a2u(tmp_add_fname(fname,1));
+                    }
+                }
+                else
+                {
+                    fe=0;
+                }
+            }
+            if(fe==0)
+            {
+                logprint(text("error: cannot update archive \"")+u2a(archive[0])+text("\"\n"));
+                return NExitCode::kUserError;
+            }
+            if(cmpro_wa_0)
+            {
+                g_isDeleteOp=1;
+            }
+            int eax=main3(
+#ifndef _WIN32
+            argc,newargs
+#endif
+            );
+            g_isDeleteOp=0;
+            if(!g_keepnonsolid)
+            {
+                if(!recompress(u2a(archive[0]),1))
+                {
+                    eax=NExitCode::kFatalError;
+                }
+            }
+            return eax;
+        }
+    }
+    if(operation_mode==777)
+    {
+        t7z_commandStrings.Add(L"-ba");
+        t7z_commandStrings.Add(L"-r");
         for(int i=1;i<commandStrings.Size();i++)
         {
             t7z_commandStrings.Add(commandStrings[i]);
@@ -1660,15 +2240,7 @@ int t7z_main
         argc,newargs
 #endif
         );
-        if(g_firstInstance)
-        {
-            tmpdir.Remove();
-        }
         return eax;
-    }
-    if(g_firstInstance)
-    {
-        tmpdir.Remove();
     }
     return NExitCode::kUserError;
 }
@@ -1708,7 +2280,8 @@ int MY_CDECL main
 #ifndef _WIN64
     if(!IsItWindowsNT())
     {
-        _tprintf(text("This program requires Windows NT/2000/2003/2008/XP/Vista\n"));
+        g_StdErr<<text("This program requires Windows NT/2000/2003/2008/XP/Vista\n");
+        g_StdErr.Flush();
         return NExitCode::kFatalError;
     }
 #endif
@@ -1719,11 +2292,20 @@ int MY_CDECL main
         SetErrorMode(SEM_FAILCRITICALERRORS);
     }
     SetLastError(0);
+    g_createnonsolid=(((BYTE*)((((DWORD)GetModuleHandle(0))&0xFFFFF000)+3))[0]&0xff)==0xff;
 #endif
     g_stripFileNames=0;
     g_singleFile=0;
     g_forceRecompress=0;
-    g_batch=0;
+    g_noninteractive=(_isatty(_fileno(stdout))==0||_isatty(_fileno(stderr))==0);
+#ifdef _WIN32
+    STARTUPINFO startupInfo;
+    GetStartupInfo(&startupInfo);
+    if((startupInfo.dwFlags&STARTF_USESHOWWINDOW)&&(startupInfo.wShowWindow==0))
+    {
+        g_noninteractive=1;
+    }
+#endif
     codePage=CP_UTF8;
     logFileName=text("");
     buffer=new char[tmpbufsize];
@@ -1735,25 +2317,11 @@ int MY_CDECL main
     g_IsParentGui=IsParentGui()!=0;
     g_firstInstance=0;
     g_defaultPriority=0;
-#ifdef _UNICODE
-    CSysString blk(text(""));
-    if(blk.Compare(CSysString(_tgetenv(_zt(MultiByteToUnicodeString(t7zsig_str,CP_ACP)))))==0)
-    {
-        setenv(_zt(MultiByteToUnicodeString(t7zsig_str,CP_ACP)),text("1"),1);
-        logprint(text("\n")+MultiByteToUnicodeString(t7zsig_str,CP_ACP)+text("/")+text(__TIMESTAMP__)+text("\n"),~2);
-        logprint(text("using ")+MultiByteToUnicodeString(k7zCopyrightString,CP_ACP)+text("\n\n"),~2);
-        g_firstInstance=1;
-    }
-#else
-    CSysString blk(text(""));
-    if(blk.Compare(CSysString(_tgetenv(t7zsig_str)))==0)
-    {
-        setenv(t7zsig_str,text("1"),1);
-        logprint(text("\n")+CSysString(t7zsig_str)+text("/")+text(__TIMESTAMP__)+text("\n"),~2);
-        logprint(text("using ")+CSysString(k7zCopyrightString)+text("\n\n"),~2);
-        g_firstInstance=1;
-    }
-#endif
+    g_isDeleteOp=0;
+    g_keepnonsolid=0;
+    g_yplus=0;
+    g_nplus=0;
+    g_nocopyright=0;
     //logprint(text("executing command line: ")+CSysString(GetCommandLine())+text("\n"),~1);
     //log execution started:
     int EAX=t7z_main(
@@ -1764,11 +2332,11 @@ int MY_CDECL main
     //log time taken
     log(text(""),1);
 #ifdef _WIN32
-    if((!g_batch)&&g_IsParentGui)
+    if((!g_noninteractive)&&g_IsParentGui)
     {
-        _tprintf(text("\nPress any key to continue . . . "));
+        logprint(text("\nPress any key to continue . . . "),~2);
         _gettch();
-        _tprintf(text("\n"));
+        logprint(text("\n"),~2);
     }
 #endif
     if(buffer)
