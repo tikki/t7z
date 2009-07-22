@@ -11,8 +11,13 @@ CFLAGS = $(CFLAGS) -I ../cpp/ \
   -D_UNICODE \
 
 #-DEXTERNAL_CODECS
-#CFLAGS = $(CFLAGS) -DDEBUG /Zi
-#LFLAGS = $(LFLAGS) /DEBUG
+
+!if "$(DEBUG)"=="TRUE"
+CFLAGS = $(CFLAGS) -DDEBUG /Zi
+LFLAGS = $(LFLAGS) /DEBUG
+!else
+LFLAGS = $(LFLAGS) /RELEASE
+!endif
 
 CONSOLE_OBJS = \
   $O\ConsoleClose.obj \
@@ -184,7 +189,8 @@ OBJS = \
 T7Z_OBJS = \
   $O\t7z.obj \
   $O\torrent7z_signature.obj \
-  $O\w32t.obj
+  $O\w32t.obj \
+  $O\usage.obj
 
 !include "../cpp/Build.mak"
 

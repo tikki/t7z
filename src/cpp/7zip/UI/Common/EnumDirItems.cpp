@@ -165,7 +165,7 @@ static HRESULT EnumerateDirItems_Spec(const NWildcard::CCensorNode &curNode,
     IEnumDirItemCallback *callback,
     UStringVector &errorPaths,
     CRecordVector<DWORD> &errorCodes)
-  
+
 {
   const UString name2 = curFolderName + (wchar_t)kDirDelimiter;
   int parent = dirItems.AddPrefix(phyParent, logParent, name2);
@@ -177,6 +177,7 @@ static HRESULT EnumerateDirItems_Spec(const NWildcard::CCensorNode &curNode,
   return res;
 }
 
+namespace torrent7z{extern bool isDeleteOp();}
 
 static HRESULT EnumerateDirItems(const NWildcard::CCensorNode &curNode,
     int phyParent, int logParent, const UString &phyPrefix,
@@ -220,9 +221,17 @@ static HRESULT EnumerateDirItems(const NWildcard::CCensorNode &curNode,
         NFind::CFileInfoW fi;
         if (!NFind::FindFile(fullPath, fi))
         {
-          errorCodes.Add(::GetLastError());
-          errorPaths.Add(fullPath);
-          continue;
+          if(torrent7z::isDeleteOp())
+          {
+            fi.Name=name;
+            fi.Attrib=0;
+          }
+          else
+          {
+            errorCodes.Add(::GetLastError());
+            errorPaths.Add(fullPath);
+            continue;
+          }
         }
         bool isDir = fi.IsDir();
         if (isDir && !item.ForDir || !isDir && !item.ForFile)
@@ -240,7 +249,7 @@ static HRESULT EnumerateDirItems(const NWildcard::CCensorNode &curNode,
         AddDirFileInfo(phyParent, logParent, fi, dirItems.Items);
         if (!isDir)
           continue;
-        
+
         UStringVector addArchivePrefixNew;
         const NWildcard::CCensorNode *nextNode = 0;
         int index = curNode.FindSubNode(name);
