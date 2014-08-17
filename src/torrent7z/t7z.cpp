@@ -1072,7 +1072,8 @@ bool recompress(const CSysString&fname,bool is7z,bool nonsolid=0)
     {
         TCHAR*buffer=(TCHAR*)torrent7z::buffer;
         log(text(""),1);
-        bool ext=is7z?0:(e7z_exe.Compare(text(""))==0?0:1);
+        //bool ext=is7z?0:(e7z_exe.Compare(text(""))==0?0:1);
+        bool ext=e7z_exe.Compare(text(""))==0?0:1;
         CSysString*app;
         if(ext)
         {
